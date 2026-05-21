@@ -2,11 +2,11 @@
 name = "rsomics-common"
 version = "0.6.0"
 description = "Shared primitives for every rsomics-* crate (errors, CLI scaffold, runner, progress, exit codes)."
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
-authors.workspace = true
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/omics-rust/rsomics-world"
+authors = ["Zane Leong <efd@live.com>"]
 readme = "README.md"
 
 [features]
@@ -23,12 +23,12 @@ test-support = []
 tier2 = ["test-support", "dep:toml", "dep:sha2", "dep:ureq"]
 
 [dependencies]
-thiserror.workspace = true
-clap = { workspace = true, features = ["derive"] }
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-flate2.workspace = true
-rayon = { workspace = true, optional = true }
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+rayon = { version = "1", optional = true  }
 toml = { version = "0.9", optional = true }
 sha2 = { version = "0.10", optional = true }
 ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
@@ -36,5 +36,3 @@ ureq = { version = "3", default-features = false, features = ["rustls"], optiona
 [dev-dependencies]
 tempfile = "3"
 
-[lints]
-workspace = true
