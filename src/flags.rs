@@ -9,7 +9,6 @@ use crate::error::Result;
 #[cfg(feature = "rayon")]
 use crate::error::RsomicsError;
 
-// flatten with #[command(flatten)] at the top level only — these are global args
 #[derive(Debug, Clone, Args)]
 pub struct CommonFlags {
     /// Number of worker threads (default: available parallelism).
