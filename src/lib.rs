@@ -1,6 +1,7 @@
 pub mod error;
 pub mod exit;
 pub mod flags;
+pub mod fmt;
 pub mod json;
 pub mod log;
 pub mod runner;
