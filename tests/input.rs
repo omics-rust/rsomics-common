@@ -1,4 +1,5 @@
-use std::io::Read;
+use std::io::{Read, Write};
+use std::process::{Command, Stdio};
 
 use rsomics_common::{RsomicsError, open_path_or_stdin, read_path_or_stdin};
 
@@ -28,4 +29,38 @@ fn missing_file_error_includes_the_path() {
         }
         other => panic!("unexpected error: {other}"),
     }
+}
+
+#[test]
+fn reads_piped_standard_input_for_dash() {
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "stdin_child"])
+        .env("RSOMICS_COMMON_STDIN_CHILD", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"a\tb\n3\t4\n")
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn stdin_child() {
+    if std::env::var_os("RSOMICS_COMMON_STDIN_CHILD").is_none() {
+        return;
+    }
+    assert_eq!(read_path_or_stdin("-").unwrap(), b"a\tb\n3\t4\n".as_slice());
 }
