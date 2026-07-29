@@ -5,7 +5,7 @@ description = "Shared primitives for every rsomics-* crate (errors, CLI scaffold
 edition = "2024"
 rust-version = "1.91"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/omics-rust/rsomics-world"
+repository = "https://github.com/omics-rust/rsomics-common"
 authors = ["Zane Leong <efd@live.com>"]
 readme = "README.md"
 
@@ -35,4 +35,3 @@ ureq = { version = "3", default-features = false, features = ["rustls"], optiona
 
 [dev-dependencies]
 tempfile = "3"
-
