@@ -3,7 +3,7 @@
 Layer-A foundation crate shared by every `rsomics-*` tool: canonical
 `RsomicsError` + `Result`, process exit codes, `--threads / --json /
 --quiet / --verbose / --seed` CLI flags, JSON envelope schema, stderr
-log, and the `run()` entry-point wrapper.
+log, path-or-standard-stream opening, and the `run()` entry-point wrapper.
 
 ```rust
 use clap::Parser;
