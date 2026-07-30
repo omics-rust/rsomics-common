@@ -5,9 +5,16 @@ Layer-A foundation crate shared by every `rsomics-*` tool: canonical
 --quiet / --verbose / --seed` CLI flags, JSON envelope schema, stderr
 log, path-or-standard-stream opening, and the `run()` entry-point wrapper.
 
+`run()` propagates JSON serialization and standard-stream write/flush failures
+to a non-zero process exit. Direct emitters should use
+`json::try_emit_ok()` / `json::try_emit_error()` and propagate their `Result`.
+The legacy `emit_ok()` / `emit_error()` wrappers are deprecated; they preserve
+their original signatures but now panic rather than silently discarding an
+output failure.
+
 ```rust
 use clap::Parser;
-use rsomics_common::{CommonFlags, Result, run};
+use rsomics_common::{CommonFlags, Result, ToolMeta, run};
 
 #[derive(Parser)]
 struct Cli {
@@ -22,7 +29,11 @@ fn pipeline(args: Cli) -> Result<()> { /* … */ Ok(()) }
 fn main() -> std::process::ExitCode {
     let args = Cli::parse();
     let common = args.common.clone();
-    run(&common, || pipeline(args))
+    let meta = ToolMeta {
+        name: env!("CARGO_PKG_NAME"),
+        version: env!("CARGO_PKG_VERSION"),
+    };
+    run(&common, meta, || pipeline(args))
 }
 ```
 
