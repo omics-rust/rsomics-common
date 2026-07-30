@@ -39,10 +39,8 @@ impl From<std::str::Utf8Error> for RsomicsError {
 }
 
 pub trait Context<T> {
-    #[allow(clippy::missing_errors_doc)]
     fn rs_context(self, msg: impl Into<String>) -> Result<T>;
 
-    #[allow(clippy::missing_errors_doc)]
     fn rs_with_context<F>(self, f: F) -> Result<T>
     where
         F: FnOnce() -> String;

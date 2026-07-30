@@ -1,22 +1,15 @@
-pub mod error;
-pub mod exit;
-pub mod flags;
-pub mod fmt;
-pub mod input;
-pub mod json;
-pub mod log;
-pub mod output;
-pub mod runner;
-#[cfg(feature = "test-support")]
-pub mod test_support;
-pub mod tool;
+//! Shared error, exit-code, and machine-output contracts for rsomics products.
+
+#![forbid(unsafe_code)]
+
+mod error;
+mod exit;
+mod flags;
+mod json;
+mod runner;
 
 pub use error::{Context, Result, RsomicsError};
 pub use exit::ExitCode;
-pub use flags::CommonFlags;
-pub use input::{open_path_or_stdin, read_path_or_stdin};
-pub use json::{SCHEMA_VERSION, ToolMeta};
-pub use log::StderrLog;
-pub use output::open_path_or_stdout;
+pub use flags::OutputArgs;
+pub use json::ToolMeta;
 pub use runner::run;
-pub use tool::Tool;

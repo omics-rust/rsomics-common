@@ -2,7 +2,7 @@ use std::process;
 
 use crate::error::RsomicsError;
 
-// exit codes are a stable contract — add variants, never renumber
+/// Stable public exit codes; existing values are never renumbered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ExitCode {

@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::error::{Result, RsomicsError};
 use crate::exit::ExitCode;
 
-pub const SCHEMA_VERSION: &str = "1.0";
+pub(crate) const SCHEMA_VERSION: &str = "1.0";
 
 #[derive(Debug, Clone, Copy)]
 pub struct ToolMeta {
@@ -38,36 +38,14 @@ struct ErrorBody<'a> {
     message: &'a str,
 }
 
-/// Emits a successful JSON envelope and propagates serialization and I/O errors.
-pub fn try_emit_ok<T: Serialize>(meta: &ToolMeta, result: &T) -> Result<()> {
+pub(crate) fn try_emit_ok<T: Serialize>(meta: &ToolMeta, result: &T) -> Result<()> {
     let stdout = io::stdout();
     write_ok_to(stdout.lock(), meta, result)
 }
 
-/// Emits an error JSON envelope and propagates serialization and I/O errors.
-pub fn try_emit_error(meta: &ToolMeta, err: &RsomicsError) -> Result<()> {
+pub(crate) fn try_emit_error(meta: &ToolMeta, err: &RsomicsError) -> Result<()> {
     let stderr = io::stderr();
     write_error_to(stderr.lock(), meta, err)
-}
-
-/// Legacy infallible wrapper.
-///
-/// Use [`try_emit_ok`] in new code. This wrapper now fails loudly instead of
-/// discarding output errors, but cannot return them without changing its
-/// established signature.
-#[deprecated(since = "0.6.4", note = "use try_emit_ok and propagate its Result")]
-pub fn emit_ok<T: Serialize>(meta: &ToolMeta, result: &T) {
-    try_emit_ok(meta, result).expect("failed to emit JSON success envelope");
-}
-
-/// Legacy infallible wrapper.
-///
-/// Use [`try_emit_error`] in new code. This wrapper now fails loudly instead of
-/// discarding output errors, but cannot return them without changing its
-/// established signature.
-#[deprecated(since = "0.6.4", note = "use try_emit_error and propagate its Result")]
-pub fn emit_error(meta: &ToolMeta, err: &RsomicsError) {
-    try_emit_error(meta, err).expect("failed to emit JSON error envelope");
 }
 
 fn write_ok_to<W: Write, T: Serialize>(mut writer: W, meta: &ToolMeta, result: &T) -> Result<()> {

@@ -1,7 +1,7 @@
 [package]
 name = "rsomics-common"
-version = "0.6.4"
-description = "Shared primitives for every rsomics-* crate (errors, CLI scaffold, runner, progress, exit codes)."
+version = "0.7.0"
+description = "Shared rsomics error, exit-code, and machine-output contracts"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT OR Apache-2.0"
@@ -9,29 +9,8 @@ repository = "https://github.com/omics-rust/rsomics-common"
 authors = ["Zane Leong <efd@live.com>"]
 readme = "README.md"
 
-[features]
-# rayon is default-on because the dominant tool-crate shape is parallel
-# scatter/gather over records. Single-threaded FFI-wrapper tools that
-# don't touch the global pool can opt out with `default-features = false`
-# to skip rayon's transitive deps and binary-size impact.
-default = ["rayon"]
-rayon = ["dep:rayon"]
-# test-support: fixture-path macro, tool_on_path predicate, run_tool wrapper.
-# tier2 implies test-support and pulls in toml + sha2 + ureq for the on-demand
-# fixture download/verify path (used only by integration tests + benches).
-test-support = []
-tier2 = ["test-support", "dep:toml", "dep:sha2", "dep:ureq"]
-
 [dependencies]
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-rayon = { version = "1", optional = true  }
-toml = { version = "0.9", optional = true }
-sha2 = { version = "0.10", optional = true }
-ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
-
-[dev-dependencies]
-tempfile = "3"
