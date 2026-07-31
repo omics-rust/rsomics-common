@@ -6,7 +6,21 @@ use serde::Serialize;
 use crate::error::{Context, Result, RsomicsError};
 use crate::exit::ExitCode;
 use crate::flags::OutputArgs;
-use crate::json::{ToolMeta, try_emit_error, try_emit_ok};
+use crate::json::{ToolMeta, try_emit_error, try_emit_invalid, try_emit_ok};
+
+/// A completed validation with either a valid or invalid structured report.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Validation<T> {
+    /// The input satisfies the validator contract.
+    Valid(T),
+    /// Validation completed and found invalid input.
+    Invalid {
+        /// The complete machine-readable report.
+        report: T,
+        /// The concise human-readable failure summary.
+        message: String,
+    },
+}
 
 /// Maps a product result to plain or JSON output and a process exit code.
 pub fn run<T, F>(output: &OutputArgs, meta: ToolMeta, body: F) -> process::ExitCode
@@ -22,6 +36,88 @@ where
         try_emit_error,
         try_emit_plain_error,
     )
+}
+
+/// Maps a validation report to the shared plain or JSON contract.
+pub fn run_validation<T, F>(output: &OutputArgs, meta: ToolMeta, body: F) -> process::ExitCode
+where
+    F: FnOnce() -> Result<Validation<T>>,
+    T: Serialize,
+{
+    run_validation_with_emitters(
+        output,
+        meta,
+        body,
+        try_emit_ok,
+        try_emit_invalid,
+        try_emit_error,
+        try_emit_plain_error,
+    )
+}
+
+fn run_validation_with_emitters<T, F, O, V, E, P>(
+    output: &OutputArgs,
+    meta: ToolMeta,
+    body: F,
+    mut emit_ok: O,
+    mut emit_invalid: V,
+    mut emit_error: E,
+    mut emit_plain_error: P,
+) -> process::ExitCode
+where
+    F: FnOnce() -> Result<Validation<T>>,
+    T: Serialize,
+    O: FnMut(&ToolMeta, &T) -> Result<()>,
+    V: FnMut(&ToolMeta, &str, &T) -> Result<()>,
+    E: FnMut(&ToolMeta, &crate::error::RsomicsError) -> Result<()>,
+    P: FnMut(&crate::error::RsomicsError) -> Result<()>,
+{
+    match body() {
+        Ok(Validation::Valid(report)) => {
+            if output.json
+                && let Err(output_error) = emit_ok(&meta, &report)
+            {
+                return report_emission_failure(
+                    &mut emit_plain_error,
+                    output_error,
+                    "emitting JSON success envelope",
+                );
+            }
+            ExitCode::Ok.into()
+        }
+        Ok(Validation::Invalid { report, message }) => {
+            let error = RsomicsError::InvalidInput(message);
+            if output.json {
+                if let Err(output_error) = emit_invalid(&meta, &error.to_string(), &report) {
+                    return report_emission_failure(
+                        &mut emit_plain_error,
+                        output_error,
+                        format!("emitting JSON validation report for {error}"),
+                    );
+                }
+            } else if let Err(output_error) = emit_plain_error(&error) {
+                return ExitCode::from(&output_error).into();
+            }
+            ExitCode::InvalidInput.into()
+        }
+        Err(error) => {
+            if output.json {
+                if let Err(output_error) = emit_error(&meta, &error) {
+                    return report_emission_failure(
+                        &mut emit_plain_error,
+                        output_error,
+                        format!("emitting JSON error envelope for {error}"),
+                    );
+                }
+                ExitCode::from(&error).into()
+            } else {
+                emit_plain_error(&error).map_or_else(
+                    |output_error| ExitCode::from(&output_error).into(),
+                    |()| ExitCode::from(&error).into(),
+                )
+            }
+        }
+    }
 }
 
 fn run_with_emitters<T, F, O, E, P>(
@@ -202,6 +298,34 @@ mod tests {
         );
         let expected: process::ExitCode = ExitCode::IoError.into();
         assert_eq!(format!("{code:?}"), format!("{expected:?}"));
+    }
+
+    #[test]
+    fn invalid_validation_emits_the_report_and_exits_one() {
+        let mut emitted = None;
+        let code = run_validation_with_emitters(
+            &json(),
+            META,
+            || {
+                Ok::<_, RsomicsError>(Validation::Invalid {
+                    report: 7,
+                    message: "record 7 is invalid".to_owned(),
+                })
+            },
+            |_, _| Ok(()),
+            |_, message, report| {
+                emitted = Some((message.to_owned(), *report));
+                Ok(())
+            },
+            |_, _| Ok(()),
+            |_| Ok(()),
+        );
+        let expected: process::ExitCode = ExitCode::InvalidInput.into();
+        assert_eq!(format!("{code:?}"), format!("{expected:?}"));
+        assert_eq!(
+            emitted,
+            Some(("invalid input: record 7 is invalid".to_owned(), 7))
+        );
     }
 
     #[test]

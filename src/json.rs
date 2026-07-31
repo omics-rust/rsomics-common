@@ -33,6 +33,17 @@ struct ErrorEnvelope<'a> {
 }
 
 #[derive(Serialize)]
+struct ValidationEnvelope<'a, T: Serialize> {
+    schema_version: &'static str,
+    tool: &'a str,
+    tool_version: &'a str,
+    status: &'static str,
+    error: ErrorBody<'a>,
+    exit_code: u8,
+    report: &'a T,
+}
+
+#[derive(Serialize)]
 struct ErrorBody<'a> {
     kind: &'static str,
     message: &'a str,
@@ -46,6 +57,15 @@ pub(crate) fn try_emit_ok<T: Serialize>(meta: &ToolMeta, result: &T) -> Result<(
 pub(crate) fn try_emit_error(meta: &ToolMeta, err: &RsomicsError) -> Result<()> {
     let stderr = io::stderr();
     write_error_to(stderr.lock(), meta, err)
+}
+
+pub(crate) fn try_emit_invalid<T: Serialize>(
+    meta: &ToolMeta,
+    message: &str,
+    report: &T,
+) -> Result<()> {
+    let stderr = io::stderr();
+    write_invalid_to(stderr.lock(), meta, message, report)
 }
 
 fn write_ok_to<W: Write, T: Serialize>(mut writer: W, meta: &ToolMeta, result: &T) -> Result<()> {
@@ -78,6 +98,27 @@ fn write_error_to<W: Write>(mut writer: W, meta: &ToolMeta, err: &RsomicsError) 
             message: &message,
         },
         exit_code,
+    };
+    write_json_line(&mut writer, &env)
+}
+
+fn write_invalid_to<W: Write, T: Serialize>(
+    mut writer: W,
+    meta: &ToolMeta,
+    message: &str,
+    report: &T,
+) -> Result<()> {
+    let env = ValidationEnvelope {
+        schema_version: SCHEMA_VERSION,
+        tool: meta.name,
+        tool_version: meta.version,
+        status: "error",
+        error: ErrorBody {
+            kind: "InvalidInput",
+            message,
+        },
+        exit_code: ExitCode::InvalidInput as u8,
+        report,
     };
     write_json_line(&mut writer, &env)
 }
@@ -201,6 +242,27 @@ mod tests {
                 .contains("bad header")
         );
         assert_eq!(v["exit_code"], exit);
+    }
+
+    #[test]
+    fn validation_envelope_keeps_the_structured_report() {
+        let mut writer = Vec::new();
+        write_invalid_to(
+            &mut writer,
+            &meta(),
+            "2 records are invalid",
+            &Summary {
+                total: 10,
+                passed: 8,
+            },
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&writer).unwrap();
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["error"]["kind"], "InvalidInput");
+        assert_eq!(value["exit_code"], ExitCode::InvalidInput as u8);
+        assert_eq!(value["report"]["total"], 10);
+        assert_eq!(value["report"]["passed"], 8);
     }
 
     #[test]

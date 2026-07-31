@@ -14,4 +14,4 @@ pub use error::{Context, Result, RsomicsError};
 pub use exit::ExitCode;
 pub use flags::OutputArgs;
 pub use json::ToolMeta;
-pub use runner::run;
+pub use runner::{Validation, run, run_validation};
