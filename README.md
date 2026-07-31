@@ -7,13 +7,17 @@ products:
 - stable process exit codes;
 - versioned JSON success and error envelopes;
 - static product identity;
+- transactional named-file output;
 - a runner that maps a product result to plain or JSON output.
 
 The public CLI surface contains only `--json`, the one output control exercised
 by `rsomics-seq`, `rsomics-fastq-preprocess`, and `rsomics-bed`.
+`write_atomic` is the named-file commit contract exercised by `rsomics-bed`
+and `rsomics-vcf`; it preserves existing permissions and never replaces the
+destination when the producing operation fails.
 
-Thread pools, RNG policy, logging verbosity, format I/O, transactional product
-output, and fixture discovery are deliberately not part of this crate.
+Thread pools, RNG policy, logging verbosity, format I/O, and fixture discovery
+are deliberately not part of this crate.
 `rsomics-fastq-preprocess` currently owns its thread control because it is the
 only verified product that uses it. A capability moves here only after a second
 product establishes the same contract.

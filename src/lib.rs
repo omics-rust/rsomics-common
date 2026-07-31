@@ -2,12 +2,14 @@
 
 #![forbid(unsafe_code)]
 
+mod atomic;
 mod error;
 mod exit;
 mod flags;
 mod json;
 mod runner;
 
+pub use atomic::write_atomic;
 pub use error::{Context, Result, RsomicsError};
 pub use exit::ExitCode;
 pub use flags::OutputArgs;
