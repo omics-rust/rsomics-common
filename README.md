@@ -15,7 +15,10 @@ The public CLI surface contains only `--json`, the one output control exercised
 by `rsomics-seq`, `rsomics-fastq-preprocess`, and `rsomics-bed`.
 `write_atomic` is the named-file commit contract exercised by `rsomics-bed`
 and `rsomics-vcf`; it preserves existing permissions and never replaces the
-destination when the producing operation fails.
+destination when the producing operation fails. `write_output` adds the
+shared product boundary: an omitted path or `-` streams to standard output,
+while a named path uses that transactional commit contract. `rsomics-bed` and
+`rsomics-call` are its concrete consumers.
 `run_validation` preserves a failed validator's report in the JSON error
 envelope while returning the shared invalid-input exit code. Its concrete
 consumers are `rsomics-vcf validate` and the planned `rsomics-bam validate`

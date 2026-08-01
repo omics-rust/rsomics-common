@@ -72,6 +72,27 @@ pub fn write_atomic<T>(
     Ok(result)
 }
 
+/// Writes to standard output or commits a named output file transactionally.
+pub fn write_output<T>(
+    path: Option<&Path>,
+    operation: impl FnOnce(&mut dyn Write) -> Result<T>,
+) -> Result<T> {
+    let mut stdout = io::stdout().lock();
+    write_output_to(path, &mut stdout, operation)
+}
+
+fn write_output_to<T>(
+    path: Option<&Path>,
+    stdout: &mut dyn Write,
+    operation: impl FnOnce(&mut dyn Write) -> Result<T>,
+) -> Result<T> {
+    match path {
+        None => operation(stdout),
+        Some(path) if path == Path::new("-") => operation(stdout),
+        Some(path) => write_atomic(path, |output| operation(output)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +128,30 @@ mod tests {
         assert!(matches!(error, RsomicsError::InvalidInput(_)));
         assert_eq!(fs::read(&path).unwrap(), b"old\n");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn output_target_selects_stream_or_transactional_file() {
+        for path in [None, Some(Path::new("-"))] {
+            let mut stdout = Vec::new();
+            let value = write_output_to(path, &mut stdout, |output| {
+                output.write_all(b"stream\n").map_err(RsomicsError::Io)?;
+                Ok(7)
+            })
+            .unwrap();
+            assert_eq!(value, 7);
+            assert_eq!(stdout, b"stream\n");
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("result.txt");
+        let mut stdout = Vec::new();
+        write_output_to(Some(&path), &mut stdout, |output| {
+            output.write_all(b"file\n").map_err(RsomicsError::Io)
+        })
+        .unwrap();
+        assert!(stdout.is_empty());
+        assert_eq!(fs::read(path).unwrap(), b"file\n");
     }
 
     #[cfg(unix)]

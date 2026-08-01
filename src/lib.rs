@@ -9,7 +9,7 @@ mod flags;
 mod json;
 mod runner;
 
-pub use atomic::write_atomic;
+pub use atomic::{write_atomic, write_output};
 pub use error::{Context, Result, RsomicsError};
 pub use exit::ExitCode;
 pub use flags::OutputArgs;
