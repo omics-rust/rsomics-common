@@ -7,6 +7,7 @@ mod error;
 mod exit;
 mod flags;
 mod json;
+mod path;
 mod runner;
 
 pub use atomic::{write_atomic, write_output};
@@ -14,4 +15,5 @@ pub use error::{Context, Result, RsomicsError};
 pub use exit::ExitCode;
 pub use flags::OutputArgs;
 pub use json::ToolMeta;
+pub use path::reject_output_alias;
 pub use runner::{Validation, run, run_validation};

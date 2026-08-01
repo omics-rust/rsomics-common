@@ -7,6 +7,7 @@ products:
 - stable process exit codes;
 - versioned JSON success and error envelopes;
 - static product identity;
+- output/input alias rejection across equivalent paths and links;
 - transactional named-file output;
 - runners that map ordinary results and structured validation reports to
   plain or JSON output.
@@ -19,6 +20,9 @@ destination when the producing operation fails. `write_output` adds the
 shared product boundary: an omitted path or `-` streams to standard output,
 while a named path uses that transactional commit contract. `rsomics-bed` and
 `rsomics-call` are its concrete consumers.
+`reject_output_alias` is the fail-loud preflight shared by `rsomics-seq` and
+`rsomics-bed`; it recognizes exact and normalized paths, hard links, and
+symbolic links without hiding filesystem errors.
 `run_validation` preserves a failed validator's report in the JSON error
 envelope while returning the shared invalid-input exit code. Its concrete
 consumers are `rsomics-vcf validate` and the planned `rsomics-bam validate`
