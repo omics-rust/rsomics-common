@@ -11,7 +11,7 @@ mod path;
 mod runner;
 mod threads;
 
-pub use atomic::{write_atomic, write_output};
+pub use atomic::{write_atomic, write_atomic_pair, write_output};
 pub use error::{Context, Result, RsomicsError};
 pub use exit::ExitCode;
 pub use flags::OutputArgs;

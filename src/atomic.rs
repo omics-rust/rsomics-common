@@ -2,9 +2,9 @@ use std::fs;
 use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use tempfile::Builder;
+use tempfile::{Builder, NamedTempFile};
 
 use crate::{Context, Result, RsomicsError};
 
@@ -14,61 +14,36 @@ pub fn write_atomic<T>(
     operation: impl FnOnce(&mut fs::File) -> Result<T>,
 ) -> Result<T> {
     let path = path.as_ref();
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let permissions = match fs::metadata(path) {
-        Ok(metadata) => Some(metadata.permissions()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(RsomicsError::Io(io::Error::new(
-                error.kind(),
-                format!("reading output metadata {}: {error}", path.display()),
-            )));
-        }
-    };
+    let mut staged = Staged::new(path)?;
+    let result = operation(staged.file())?;
+    staged.prepare()?;
+    staged.commit()?;
+    Ok(result)
+}
 
-    let mut builder = Builder::new();
-    builder.prefix(".rsomics-");
-    #[cfg(unix)]
-    if permissions.is_none() {
-        builder.permissions(fs::Permissions::from_mode(0o666));
+/// Writes two named files as one recoverable transaction.
+pub fn write_atomic_pair<T>(
+    first: impl AsRef<Path>,
+    second: impl AsRef<Path>,
+    operation: impl FnOnce(&mut fs::File, &mut fs::File) -> Result<T>,
+) -> Result<T> {
+    let first = first.as_ref();
+    let second = second.as_ref();
+    reject_pair_alias(first, second)?;
+    let mut first_staged = Staged::new(first)?;
+    let mut second_staged = Staged::new(second)?;
+    let first_backup = Backup::new(first)?;
+    let second_backup = Backup::new(second)?;
+    let result = operation(first_staged.file(), second_staged.file())?;
+    first_staged.prepare()?;
+    second_staged.prepare()?;
+    if let Err(error) = first_staged.commit() {
+        return Err(first_backup.restore(first, error));
     }
-    if let Some(existing) = permissions.as_ref() {
-        builder.permissions(existing.clone());
+    if let Err(error) = second_staged.commit() {
+        let error = first_backup.restore(first, error);
+        return Err(second_backup.restore(second, error));
     }
-    let mut temporary = builder
-        .tempfile_in(parent)
-        .rs_with_context(|| format!("creating temporary output beside {}", path.display()))?;
-    if let Some(existing) = permissions {
-        temporary
-            .as_file()
-            .set_permissions(existing)
-            .rs_with_context(|| format!("preserving output permissions {}", path.display()))?;
-    }
-
-    let result = operation(temporary.as_file_mut())?;
-    temporary
-        .as_file_mut()
-        .flush()
-        .rs_with_context(|| format!("flushing output {}", path.display()))?;
-    temporary
-        .as_file_mut()
-        .sync_all()
-        .rs_with_context(|| format!("syncing output {}", path.display()))?;
-    temporary.persist(path).map_err(|error| {
-        RsomicsError::Io(io::Error::new(
-            error.error.kind(),
-            format!("committing output {}: {}", path.display(), error.error),
-        ))
-    })?;
-
-    #[cfg(unix)]
-    fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .rs_with_context(|| format!("syncing output directory {}", parent.display()))?;
-
     Ok(result)
 }
 
@@ -91,6 +66,164 @@ fn write_output_to<T>(
         Some(path) if path == Path::new("-") => operation(stdout),
         Some(path) => write_atomic(path, |output| operation(output)),
     }
+}
+
+struct Staged {
+    path: PathBuf,
+    parent: PathBuf,
+    temporary: NamedTempFile,
+}
+
+impl Staged {
+    fn new(path: &Path) -> Result<Self> {
+        let parent = parent(path);
+        let permissions = match fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() => Some(metadata.permissions()),
+            Ok(_) => {
+                return Err(RsomicsError::InvalidInput(format!(
+                    "output {} is not a regular file",
+                    path.display()
+                )));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(RsomicsError::Io(error)),
+        };
+        let mut builder = Builder::new();
+        builder.prefix(".rsomics-");
+        #[cfg(unix)]
+        if permissions.is_none() {
+            builder.permissions(fs::Permissions::from_mode(0o666));
+        }
+        if let Some(existing) = permissions.as_ref() {
+            builder.permissions(existing.clone());
+        }
+        let temporary = builder
+            .tempfile_in(parent)
+            .rs_with_context(|| format!("creating temporary output beside {}", path.display()))?;
+        Ok(Self {
+            path: path.to_owned(),
+            parent: parent.to_owned(),
+            temporary,
+        })
+    }
+
+    fn file(&mut self) -> &mut fs::File {
+        self.temporary.as_file_mut()
+    }
+
+    fn prepare(&mut self) -> Result<()> {
+        self.file()
+            .flush()
+            .rs_with_context(|| format!("flushing output {}", self.path.display()))?;
+        self.file()
+            .sync_all()
+            .rs_with_context(|| format!("syncing output {}", self.path.display()))
+    }
+
+    fn commit(self) -> Result<()> {
+        self.temporary.persist(&self.path).map_err(|error| {
+            RsomicsError::Io(io::Error::new(
+                error.error.kind(),
+                format!("committing output {}: {}", self.path.display(), error.error),
+            ))
+        })?;
+        #[cfg(unix)]
+        fs::File::open(&self.parent)
+            .and_then(|directory| directory.sync_all())
+            .rs_with_context(|| format!("syncing output directory {}", self.parent.display()))?;
+        Ok(())
+    }
+}
+
+enum Backup {
+    Absent,
+    Existing(NamedTempFile),
+}
+
+impl Backup {
+    fn new(path: &Path) -> Result<Self> {
+        match fs::metadata(path) {
+            Ok(metadata) if !metadata.is_file() => Err(RsomicsError::InvalidInput(format!(
+                "output {} is not a regular file",
+                path.display()
+            ))),
+            Ok(_) => Builder::new()
+                .prefix(".rsomics-backup-")
+                .make_in(parent(path), |backup| {
+                    fs::hard_link(path, backup)?;
+                    fs::File::open(backup)
+                })
+                .map(Self::Existing)
+                .rs_with_context(|| format!("backing up output {}", path.display())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::Absent),
+            Err(error) => Err(RsomicsError::Io(error)),
+        }
+    }
+
+    fn restore(self, path: &Path, cause: RsomicsError) -> RsomicsError {
+        let restored = match self {
+            Self::Absent => match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            },
+            Self::Existing(backup) => backup
+                .persist(path)
+                .map(|_| ())
+                .map_err(|error| error.error),
+        };
+        match restored {
+            Ok(()) => cause,
+            Err(error) => RsomicsError::Io(io::Error::new(
+                error.kind(),
+                format!(
+                    "{cause}; also failed to restore output {}: {error}",
+                    path.display()
+                ),
+            )),
+        }
+    }
+}
+
+fn reject_pair_alias(first: &Path, second: &Path) -> Result<()> {
+    if first == Path::new("-") || second == Path::new("-") {
+        return Err(RsomicsError::ConfigError(
+            "paired transaction outputs must be named files".to_owned(),
+        ));
+    }
+    let alias = if first == second {
+        true
+    } else {
+        match same_file::is_same_file(first, second) {
+            Ok(alias) => alias,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                prospective_path(first)? == prospective_path(second)?
+            }
+            Err(error) => return Err(RsomicsError::Io(error)),
+        }
+    };
+    if alias {
+        return Err(RsomicsError::ConfigError(format!(
+            "paired outputs resolve to the same path: {}",
+            first.display()
+        )));
+    }
+    Ok(())
+}
+
+fn prospective_path(path: &Path) -> Result<PathBuf> {
+    let name = path.file_name().ok_or_else(|| {
+        RsomicsError::ConfigError(format!("output path has no file name: {}", path.display()))
+    })?;
+    fs::canonicalize(parent(path))
+        .map(|parent| parent.join(name))
+        .rs_with_context(|| format!("resolving output parent for {}", path.display()))
+}
+
+fn parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 #[cfg(test)]
@@ -171,5 +304,64 @@ mod tests {
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o640
         );
+    }
+
+    #[test]
+    fn pair_failure_keeps_both_destinations() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("counts.tsv");
+        let second = directory.path().join("counts.tsv.summary");
+        fs::write(&first, b"old counts\n").unwrap();
+        fs::write(&second, b"old summary\n").unwrap();
+
+        let error = write_atomic_pair(&first, &second, |counts, summary| {
+            counts
+                .write_all(b"new counts\n")
+                .map_err(RsomicsError::Io)?;
+            summary
+                .write_all(b"new summary\n")
+                .map_err(RsomicsError::Io)?;
+            Err::<(), _>(RsomicsError::InvalidInput("rejected".to_owned()))
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, RsomicsError::InvalidInput(_)));
+        assert_eq!(fs::read(&first).unwrap(), b"old counts\n");
+        assert_eq!(fs::read(&second).unwrap(), b"old summary\n");
+    }
+
+    #[test]
+    fn second_pair_commit_failure_restores_the_first() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("counts.tsv");
+        let second = directory.path().join("counts.tsv.summary");
+        fs::write(&first, b"old counts\n").unwrap();
+        fs::write(&second, b"old summary\n").unwrap();
+
+        let error = write_atomic_pair(&first, &second, |counts, summary| {
+            counts
+                .write_all(b"new counts\n")
+                .map_err(RsomicsError::Io)?;
+            summary
+                .write_all(b"new summary\n")
+                .map_err(RsomicsError::Io)?;
+            fs::remove_file(&second).map_err(RsomicsError::Io)?;
+            fs::create_dir(&second).map_err(RsomicsError::Io)?;
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("committing output"));
+        assert_eq!(fs::read(&first).unwrap(), b"old counts\n");
+        assert!(second.is_dir());
+    }
+
+    #[test]
+    fn pair_rejects_equivalent_destinations() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("counts.tsv");
+        let second = directory.path().join(".").join("counts.tsv");
+        let error = write_atomic_pair(first, second, |_, _| Ok(())).unwrap_err();
+        assert!(error.to_string().contains("same path"));
     }
 }

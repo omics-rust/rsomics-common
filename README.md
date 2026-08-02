@@ -9,7 +9,7 @@ products:
 - versioned JSON success and error envelopes;
 - static product identity;
 - output/input alias rejection across equivalent paths and links;
-- transactional named-file output;
+- transactional single-file and paired-file output;
 - runners that map ordinary results and structured validation reports to
   plain or JSON output.
 
@@ -25,6 +25,10 @@ destination when the producing operation fails. `write_output` adds the
 shared product boundary: an omitted path or `-` streams to standard output,
 while a named path uses that transactional commit contract. `rsomics-bed` and
 `rsomics-call` are its concrete consumers.
+`write_atomic_pair` stages two named outputs and restores the first if the
+second cannot commit. `rsomics-liftover` and `rsomics-count` provide the two
+consumer contracts; format-specific naming and serialization remain in those
+products.
 `reject_output_alias` is the fail-loud preflight shared by `rsomics-seq` and
 `rsomics-bed`; it recognizes exact and normalized paths, hard links, and
 symbolic links without hiding filesystem errors.
