@@ -1,6 +1,6 @@
 [package]
 name = "rsomics-common"
-version = "0.12.0"
+version = "0.12.1"
 description = "Shared rsomics CLI, error, exit-code, and machine-output contracts"
 edition = "2024"
 rust-version = "1.91"

@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use tempfile::{Builder, NamedTempFile};
 
 use crate::{Context, Result, RsomicsError};
+
+const OUTPUT_BUFFER_SIZE: usize = 1024 * 1024;
 
 /// Writes a named file transactionally without replacing the destination on failure.
 pub fn write_atomic<T>(
@@ -62,10 +64,20 @@ fn write_output_to<T>(
     operation: impl FnOnce(&mut dyn Write) -> Result<T>,
 ) -> Result<T> {
     match path {
-        None => operation(stdout),
-        Some(path) if path == Path::new("-") => operation(stdout),
-        Some(path) => write_atomic(path, |output| operation(output)),
+        None => write_buffered(stdout, operation),
+        Some(path) if path == Path::new("-") => write_buffered(stdout, operation),
+        Some(path) => write_atomic(path, |output| write_buffered(output, operation)),
     }
+}
+
+fn write_buffered<T>(
+    output: &mut dyn Write,
+    operation: impl FnOnce(&mut dyn Write) -> Result<T>,
+) -> Result<T> {
+    let mut output = BufWriter::with_capacity(OUTPUT_BUFFER_SIZE, output);
+    let result = operation(&mut output)?;
+    output.flush().map_err(RsomicsError::Io)?;
+    Ok(result)
 }
 
 struct Staged {
@@ -230,6 +242,29 @@ fn parent(path: &Path) -> &Path {
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        fail_flush: bool,
+        writes: usize,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self.fail_flush {
+                Err(io::Error::other("flush failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     #[test]
     fn success_replaces_the_destination() {
         let directory = tempfile::tempdir().unwrap();
@@ -285,6 +320,35 @@ mod tests {
         .unwrap();
         assert!(stdout.is_empty());
         assert_eq!(fs::read(path).unwrap(), b"file\n");
+    }
+
+    #[test]
+    fn output_target_batches_small_writes() {
+        let mut output = CountingWriter::default();
+        write_output_to(None, &mut output, |writer| {
+            for _ in 0..10_000 {
+                writer.write_all(b"row\n").map_err(RsomicsError::Io)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(output.writes, 1);
+        assert_eq!(output.bytes.len(), 40_000);
+    }
+
+    #[test]
+    fn output_target_propagates_buffer_flush_failure() {
+        let mut output = CountingWriter {
+            fail_flush: true,
+            ..Default::default()
+        };
+        let error = write_output_to(None, &mut output, |writer| {
+            writer.write_all(b"row\n").map_err(RsomicsError::Io)
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, RsomicsError::Io(_)));
     }
 
     #[cfg(unix)]
