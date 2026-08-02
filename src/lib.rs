@@ -1,4 +1,4 @@
-//! Shared error, exit-code, and machine-output contracts for rsomics products.
+//! Shared CLI, error, exit-code, and machine-output contracts for rsomics products.
 
 #![forbid(unsafe_code)]
 
@@ -9,6 +9,7 @@ mod flags;
 mod json;
 mod path;
 mod runner;
+mod threads;
 
 pub use atomic::{write_atomic, write_output};
 pub use error::{Context, Result, RsomicsError};
@@ -17,3 +18,4 @@ pub use flags::OutputArgs;
 pub use json::ToolMeta;
 pub use path::reject_output_alias;
 pub use runner::{Validation, run, run_validation};
+pub use threads::ThreadArgs;
