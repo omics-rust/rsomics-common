@@ -106,12 +106,17 @@ impl Staged {
         if permissions.is_none() {
             builder.permissions(fs::Permissions::from_mode(0o666));
         }
-        if let Some(existing) = permissions.as_ref() {
-            builder.permissions(existing.clone());
-        }
         let temporary = builder
             .tempfile_in(parent)
             .rs_with_context(|| format!("creating temporary output beside {}", path.display()))?;
+        if let Some(existing) = permissions {
+            temporary
+                .as_file()
+                .set_permissions(existing)
+                .rs_with_context(|| {
+                    format!("preserving permissions for output {}", path.display())
+                })?;
+        }
         Ok(Self {
             path: path.to_owned(),
             parent: parent.to_owned(),
@@ -357,7 +362,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("result.txt");
         fs::write(&path, b"old\n").unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
 
         write_atomic(&path, |output| {
             output.write_all(b"new\n").map_err(RsomicsError::Io)
@@ -366,7 +371,7 @@ mod tests {
 
         assert_eq!(
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
-            0o640
+            0o666
         );
     }
 
