@@ -16,9 +16,8 @@ pub fn write_atomic<T>(
     operation: impl FnOnce(&mut fs::File) -> Result<T>,
 ) -> Result<T> {
     let path = path.as_ref();
-    let mut staged = Staged::new(path)?;
-    let result = operation(staged.file())?;
-    staged.prepare()?;
+    let mut staged = AtomicFile::new(path)?;
+    let result = operation(staged.file_mut())?;
     staged.commit()?;
     Ok(result)
 }
@@ -32,20 +31,10 @@ pub fn write_atomic_pair<T>(
     let first = first.as_ref();
     let second = second.as_ref();
     reject_pair_alias(first, second)?;
-    let mut first_staged = Staged::new(first)?;
-    let mut second_staged = Staged::new(second)?;
-    let first_backup = Backup::new(first)?;
-    let second_backup = Backup::new(second)?;
-    let result = operation(first_staged.file(), second_staged.file())?;
-    first_staged.prepare()?;
-    second_staged.prepare()?;
-    if let Err(error) = first_staged.commit() {
-        return Err(first_backup.restore(first, error));
-    }
-    if let Err(error) = second_staged.commit() {
-        let error = first_backup.restore(first, error);
-        return Err(second_backup.restore(second, error));
-    }
+    let mut first_staged = AtomicFile::new(first)?;
+    let mut second_staged = AtomicFile::new(second)?;
+    let result = operation(first_staged.file_mut(), second_staged.file_mut())?;
+    AtomicFile::commit_all(vec![first_staged, second_staged])?;
     Ok(result)
 }
 
@@ -80,14 +69,18 @@ fn write_buffered<T>(
     Ok(result)
 }
 
-struct Staged {
+/// A named output staged beside its destination until it is committed.
+pub struct AtomicFile {
     path: PathBuf,
     parent: PathBuf,
     temporary: NamedTempFile,
+    backup: Backup,
 }
 
-impl Staged {
-    fn new(path: &Path) -> Result<Self> {
+impl AtomicFile {
+    /// Creates a staged output beside the destination.
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
         let parent = parent(path);
         let permissions = match fs::metadata(path) {
             Ok(metadata) if metadata.is_file() => Some(metadata.permissions()),
@@ -117,27 +110,86 @@ impl Staged {
                     format!("preserving permissions for output {}", path.display())
                 })?;
         }
+        let backup = Backup::new(path)?;
         Ok(Self {
             path: path.to_owned(),
             parent: parent.to_owned(),
             temporary,
+            backup,
         })
     }
 
-    fn file(&mut self) -> &mut fs::File {
+    /// Opens an owned handle to the staged output.
+    pub fn reopen(&self) -> Result<fs::File> {
+        self.temporary
+            .reopen()
+            .rs_with_context(|| format!("opening temporary output beside {}", self.path.display()))
+    }
+
+    /// Returns the staged output handle.
+    pub fn file_mut(&mut self) -> &mut fs::File {
         self.temporary.as_file_mut()
     }
 
+    /// Returns the temporary path used by the staged output.
+    pub fn temporary_path(&self) -> &Path {
+        self.temporary.path()
+    }
+
+    /// Flushes and atomically replaces the destination.
+    pub fn commit(mut self) -> Result<()> {
+        self.prepare()?;
+        let path = self.path.clone();
+        let backup = std::mem::replace(&mut self.backup, Backup::Absent);
+        self.persist().map_err(|error| backup.restore(&path, error))
+    }
+
+    /// Commits multiple staged outputs as one recoverable transaction.
+    pub fn commit_all(mut outputs: Vec<Self>) -> Result<()> {
+        for (index, output) in outputs.iter().enumerate() {
+            for previous in &outputs[..index] {
+                reject_pair_alias(&previous.path, &output.path)?;
+            }
+        }
+        for output in &mut outputs {
+            output.prepare()?;
+        }
+
+        let paths = outputs
+            .iter()
+            .map(|output| output.path.clone())
+            .collect::<Vec<_>>();
+        let backups = outputs
+            .iter_mut()
+            .map(|output| std::mem::replace(&mut output.backup, Backup::Absent))
+            .collect::<Vec<_>>();
+        for (index, output) in outputs.into_iter().enumerate() {
+            if let Err(error) = output.persist() {
+                let mut restore = backups
+                    .into_iter()
+                    .zip(paths)
+                    .take(index + 1)
+                    .collect::<Vec<_>>();
+                let mut error = error;
+                while let Some((backup, path)) = restore.pop() {
+                    error = backup.restore(&path, error);
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     fn prepare(&mut self) -> Result<()> {
-        self.file()
+        self.file_mut()
             .flush()
             .rs_with_context(|| format!("flushing output {}", self.path.display()))?;
-        self.file()
+        self.file_mut()
             .sync_all()
             .rs_with_context(|| format!("syncing output {}", self.path.display()))
     }
 
-    fn commit(self) -> Result<()> {
+    fn persist(self) -> Result<()> {
         self.temporary.persist(&self.path).map_err(|error| {
             RsomicsError::Io(io::Error::new(
                 error.error.kind(),
@@ -301,6 +353,55 @@ mod tests {
         assert!(matches!(error, RsomicsError::InvalidInput(_)));
         assert_eq!(fs::read(&path).unwrap(), b"old\n");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn owned_atomic_file_is_invisible_until_commit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("result.txt");
+        fs::write(&path, b"old\n").unwrap();
+
+        let transaction = AtomicFile::new(&path).unwrap();
+        let temporary = transaction.temporary_path().to_owned();
+        let mut output = transaction.reopen().unwrap();
+        output.write_all(b"new\n").unwrap();
+        output.flush().unwrap();
+        drop(output);
+
+        assert_eq!(fs::read(&path).unwrap(), b"old\n");
+        transaction.commit().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new\n");
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn owned_atomic_files_restore_prior_outputs_as_a_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths =
+            ["first.txt", "second.txt", "third.txt"].map(|name| directory.path().join(name));
+        for path in &paths {
+            fs::write(
+                path,
+                format!("old {}\n", path.file_name().unwrap().to_string_lossy()),
+            )
+            .unwrap();
+        }
+
+        let mut transactions = paths
+            .iter()
+            .map(|path| AtomicFile::new(path).unwrap())
+            .collect::<Vec<_>>();
+        for (index, transaction) in transactions.iter_mut().enumerate() {
+            writeln!(transaction.file_mut(), "new {index}").unwrap();
+        }
+        fs::remove_file(&paths[1]).unwrap();
+        fs::create_dir(&paths[1]).unwrap();
+
+        let error = AtomicFile::commit_all(transactions).unwrap_err();
+        assert!(error.to_string().contains("committing output"));
+        assert_eq!(fs::read(&paths[0]).unwrap(), b"old first.txt\n");
+        assert!(paths[1].is_dir());
+        assert_eq!(fs::read(&paths[2]).unwrap(), b"old third.txt\n");
     }
 
     #[test]
