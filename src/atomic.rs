@@ -266,7 +266,7 @@ fn reject_pair_alias(first: &Path, second: &Path) -> Result<()> {
         match same_file::is_same_file(first, second) {
             Ok(alias) => alias,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                prospective_path(first)? == prospective_path(second)?
+                prospective_paths_alias(first, second)?
             }
             Err(error) => return Err(RsomicsError::Io(error)),
         }
@@ -278,6 +278,40 @@ fn reject_pair_alias(first: &Path, second: &Path) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn prospective_paths_alias(first: &Path, second: &Path) -> Result<bool> {
+    let first = prospective_path(first)?;
+    let second = prospective_path(second)?;
+    if first == second {
+        return Ok(true);
+    }
+    if !same_file::is_same_file(parent(&first), parent(&second))? {
+        return Ok(false);
+    }
+
+    let probe = Builder::new()
+        .prefix(".rsomics-alias-")
+        .tempdir_in(parent(&first))
+        .rs_with_context(|| format!("checking output names beside {}", first.display()))?;
+    drop(
+        fs::OpenOptions::new().write(true).create_new(true).open(
+            probe
+                .path()
+                .join(first.file_name().expect("validated output file name")),
+        )?,
+    );
+    let alias = match fs::OpenOptions::new().write(true).create_new(true).open(
+        probe
+            .path()
+            .join(second.file_name().expect("validated output file name")),
+    ) {
+        Ok(_) => false,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => true,
+        Err(error) => return Err(RsomicsError::Io(error)),
+    };
+    probe.close()?;
+    Ok(alias)
 }
 
 fn prospective_path(path: &Path) -> Result<PathBuf> {
@@ -533,5 +567,47 @@ mod tests {
         let second = directory.path().join(".").join("counts.tsv");
         let error = write_atomic_pair(first, second, |_, _| Ok(())).unwrap_err();
         assert!(error.to_string().contains("same path"));
+
+        fs::write(directory.path().join("case-probe"), b"filesystem profile").unwrap();
+        let case_insensitive = directory.path().join("CASE-PROBE").exists();
+        for grouped in [false, true] {
+            let name = if grouped { "group" } else { "pair" };
+            let first = directory.path().join(format!("{name}.tsv"));
+            let second = directory
+                .path()
+                .join(format!("{}.tsv", name.to_ascii_uppercase()));
+            let mut operation_called = false;
+            let result = if grouped {
+                let mut first_staged = AtomicFile::new(&first).unwrap();
+                let mut second_staged = AtomicFile::new(&second).unwrap();
+                first_staged.file_mut().write_all(b"table\n").unwrap();
+                second_staged.file_mut().write_all(b"report\n").unwrap();
+                AtomicFile::commit_all(vec![first_staged, second_staged])
+            } else {
+                write_atomic_pair(&first, &second, |table, report| {
+                    operation_called = true;
+                    table.write_all(b"table\n").map_err(RsomicsError::Io)?;
+                    report.write_all(b"report\n").map_err(RsomicsError::Io)
+                })
+            };
+            if case_insensitive {
+                assert!(matches!(result, Err(RsomicsError::ConfigError(_))));
+                assert!(!first.exists() && !second.exists());
+                if !grouped {
+                    assert!(!operation_called);
+                }
+            } else {
+                result.unwrap();
+                assert_eq!(fs::read(first).unwrap(), b"table\n");
+                assert_eq!(fs::read(second).unwrap(), b"report\n");
+            }
+        }
+        assert!(fs::read_dir(directory.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".rsomics-")
+        }));
     }
 }
